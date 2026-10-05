@@ -276,11 +276,11 @@ BarWidget {
         }
         Button {
           iconText: "󰅂"
-          tooltipText: root.ready && root.svc.canGoForward ? "Next wallpaper" : "Fetch a new wallpaper"
+          tooltipText: "Next wallpaper"
           foreground: root.fg
           accent: root.accent
           bordered: true
-          enabled: !root.busy
+          enabled: root.ready && root.svc.canGoForward && !root.busy
           opacity: enabled ? 1 : 0.4
           onClicked: root.svc.next()
         }

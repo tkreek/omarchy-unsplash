@@ -396,10 +396,7 @@ cmd_step() {
     (.history | map(.id) | index($cur)) as $i
     | if $i == null or $i + $o < 0 then null else .history[$i + $o] end' "$STATE")
   if [[ -z $target || $target == null ]]; then
-    if ((offset < 0)); then
-      fetch
-      return
-    fi
+    ((offset < 0)) && die 1 "already at the newest wallpaper (use: omarchy-unsplash new)"
     die 1 "no older photo in history"
   fi
   local file
