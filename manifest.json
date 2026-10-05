@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "tkreek.unsplash",
+  "name": "Unsplash Wallpapers",
+  "version": "0.1.0",
+  "author": "Thomas Kreek (tkreek)",
+  "license": "MIT",
+  "description": "A fresh Unsplash wallpaper every day (or hour, or week), optionally guided by keywords or collections. Save favorites, step back through recent wallpapers, and credit photographers right from the bar.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Unsplash",
+    "description": "Daily Unsplash wallpaper with favorites and keywords",
+    "category": "Media",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

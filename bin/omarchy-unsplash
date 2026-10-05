@@ -1,0 +1,726 @@
+#!/bin/bash
+
+# omarchy-unsplash: fresh Unsplash wallpapers for Omarchy.
+#
+# Fetches a photo from the Unsplash API (optionally guided by keywords or
+# collections), sizes it to the largest monitor, and applies it with
+# `omarchy theme bg set`. Keeps a short history so you can step back, and
+# copies favorites into a folder of their own.
+#
+#   config  ~/.config/omarchy-unsplash/config.json       (API key, keywords, interval)
+#   state   ~/.local/state/omarchy-unsplash/state.json   (current photo, history; read by the bar widget)
+#   photos  ~/.local/share/omarchy-unsplash/photos/      (recent downloads, pruned to history_size)
+#   faves   ~/Pictures/Unsplash/                         (favorites; configurable)
+
+set -o pipefail
+
+VERSION="0.1.0"
+API="https://api.unsplash.com"
+# Unsplash's API guidelines require these on every link back to their site.
+UTM="utm_source=omarchy_unsplash&utm_medium=referral"
+# The "Wallpapers" topic: the default source when no keywords or collections are set.
+DEFAULT_TOPIC="bo8jQKTaE0Y"
+KEY_SIGNUP_URL="https://unsplash.com/oauth/applications/new"
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy-unsplash"
+CONFIG="$CONFIG_DIR/config.json"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-unsplash"
+STATE="$STATE_DIR/state.json"
+LOCK="$STATE_DIR/lock"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-unsplash"
+PHOTOS_DIR="$DATA_DIR/photos"
+FAVORITES_DB="$DATA_DIR/favorites.json"
+
+# Exit codes the bar widget and scheduler can tell apart.
+E_USAGE=2
+E_NO_KEY=3
+E_API=4
+E_NETWORK=5
+E_BUSY=75
+
+die() {
+  local code=$1
+  shift
+  echo "omarchy-unsplash: $*" >&2
+  exit "$code"
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+notify() {
+  # notify <headline> [description] [image]
+  if have omarchy-notification-send; then
+    local args=(--app-name "Unsplash" -g "󰸉")
+    [[ -n $3 ]] && args+=(--image "$3")
+    omarchy-notification-send "${args[@]}" "$1" "${2:-}" >/dev/null 2>&1 &
+  elif have notify-send; then
+    notify-send -a "Unsplash" ${3:+-i "$3"} "$1" "${2:-}" >/dev/null 2>&1 &
+  fi
+}
+
+# ---------------------------------------------------------------- config
+
+ensure_config() {
+  [[ -f $CONFIG ]] && return
+  mkdir -p "$CONFIG_DIR"
+  (
+    umask 077
+    cat >"$CONFIG" <<'EOF'
+{
+  "access_key": "",
+  "keywords": [],
+  "collections": [],
+  "interval": "daily",
+  "orientation": "landscape",
+  "content_filter": "high",
+  "history_size": 30,
+  "favorites_dir": "",
+  "notify": true,
+  "proxy_url": ""
+}
+EOF
+  )
+}
+
+# cfg <key> [default]: scalar config value, arrays one item per line.
+cfg() {
+  local value
+  value=$(jq -r --arg k "$1" '.[$k] | if . == null then empty elif type == "array" then .[] else tostring end' "$CONFIG" 2>/dev/null)
+  if [[ -n $value ]]; then printf '%s\n' "$value"; else [[ -n ${2:-} ]] && printf '%s\n' "$2"; fi
+  return 0
+}
+
+# cfg_update <jq args...>: rewrite the config through a jq filter, atomically.
+cfg_update() {
+  local tmp
+  tmp=$(mktemp "$CONFIG.XXXXXX") || return 1
+  chmod 600 "$tmp"
+  if jq "$@" "$CONFIG" >"$tmp"; then
+    mv "$tmp" "$CONFIG"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+access_key() {
+  if [[ -n ${UNSPLASH_ACCESS_KEY:-} ]]; then echo "$UNSPLASH_ACCESS_KEY"; else cfg access_key; fi
+}
+
+favorites_dir() {
+  local dir
+  dir=$(cfg favorites_dir)
+  if [[ -z $dir ]]; then
+    local pictures
+    pictures=$(xdg-user-dir PICTURES 2>/dev/null)
+    [[ -z $pictures || $pictures == "$HOME" ]] && pictures="$HOME/Pictures"
+    dir="$pictures/Unsplash"
+  fi
+  echo "${dir/#\~/$HOME}"
+}
+
+# ---------------------------------------------------------------- state
+
+ensure_state() {
+  mkdir -p "$STATE_DIR" "$PHOTOS_DIR"
+  [[ -f $STATE ]] || echo '{"current":null,"history":[],"last_fetch":0,"last_error":"","busy":false}' >"$STATE"
+  [[ -f $FAVORITES_DB ]] || echo '{}' >"$FAVORITES_DB"
+}
+
+# state_update <jq args...>: rewrite state.json through a jq filter, atomically
+# (the bar widget watches this file, so it must never be seen half-written).
+state_update() {
+  local tmp
+  tmp=$(mktemp "$STATE.XXXXXX") || return 1
+  if jq "$@" "$STATE" >"$tmp"; then
+    mv "$tmp" "$STATE"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+set_error() {
+  state_update --arg e "$1" --argjson t "$(date +%s)" '.last_error = $e | .error_at = $t'
+}
+
+clear_error() {
+  state_update '.last_error = "" | .error_at = 0'
+}
+
+# Hold the lock for the rest of the process. Mutating commands call this so a
+# keybinding pressed mid-download can't race the scheduler.
+take_lock() {
+  exec 9>"$LOCK"
+  flock -n 9 || die $E_BUSY "another fetch is already running"
+  state_update '.busy = true'
+  trap 'state_update ".busy = false"' EXIT
+}
+
+current_field() {
+  jq -r --arg f "$1" '.current[$f] // empty' "$STATE"
+}
+
+# ---------------------------------------------------------------- unsplash
+
+uri() { jq -rn --arg v "$1" '$v | @uri'; }
+
+# api_get <path?query>: prints the response body; maps HTTP failures to exit codes.
+api_get() {
+  local key body status
+  key=$(access_key)
+  body=$(mktemp)
+  status=$(curl -sS --max-time 20 -o "$body" -w '%{http_code}' \
+    -H "Authorization: Client-ID $key" -H "Accept-Version: v1" "$API$1" 2>/dev/null)
+  local rc=$?
+  local out
+  out=$(<"$body")
+  rm -f "$body"
+
+  if ((rc != 0)) || [[ $status == 000 ]]; then
+    set_error "network"
+    die $E_NETWORK "could not reach Unsplash (network error)"
+  fi
+  case $status in
+    200) printf '%s' "$out" ;;
+    401) set_error "bad_key"; die $E_API "Unsplash rejected the access key (401). Run: omarchy-unsplash key set <key>" ;;
+    403) set_error "rate_limited"; die $E_API "Unsplash rate limit reached (403); try again in an hour" ;;
+    404) set_error "no_results"; die $E_API "no photos found for that search (404)" ;;
+    *) set_error "http_$status"; die $E_API "Unsplash returned HTTP $status" ;;
+  esac
+}
+
+# pick_source [query...]: decides what to ask Unsplash for. Prints "kind<TAB>value".
+# An explicit query wins; otherwise one keyword or collection is picked at
+# random each time (like the Mac app's themes); otherwise the Wallpapers topic.
+pick_source() {
+  if (($# > 0)); then
+    printf 'query\t%s\n' "$*"
+    return
+  fi
+  local sources=()
+  local item
+  while IFS= read -r item; do [[ -n $item ]] && sources+=("query"$'\t'"$item"); done < <(cfg keywords)
+  while IFS= read -r item; do [[ -n $item ]] && sources+=("collection"$'\t'"$item"); done < <(cfg collections)
+  if ((${#sources[@]} == 0)); then
+    printf 'topic\t%s\n' "$DEFAULT_TOPIC"
+  else
+    printf '%s\n' "${sources[RANDOM % ${#sources[@]}]}"
+  fi
+}
+
+random_photo_json() {
+  local kind=$1 value=$2
+  local params="orientation=$(uri "$(cfg orientation landscape)")&content_filter=$(uri "$(cfg content_filter high)")"
+  case $kind in
+    query) params+="&query=$(uri "$value")" ;;
+    collection) params+="&collections=$(uri "$value")" ;;
+    topic) params+="&topics=$(uri "$value")" ;;
+  esac
+  api_get "/photos/random?$params"
+}
+
+# Largest monitor in physical pixels, so one image covers every screen.
+screen_size() {
+  local size
+  size=$(hyprctl monitors -j 2>/dev/null | jq -r '[map(.width) | max, map(.height) | max] | "\(.[0])x\(.[1])"' 2>/dev/null)
+  [[ $size =~ ^[0-9]+x[0-9]+$ ]] || size="3840x2160"
+  echo "$size"
+}
+
+# ---------------------------------------------------------------- wallpaper
+
+apply_wallpaper() {
+  local file=$1
+  if have omarchy-theme-bg-set; then
+    omarchy-theme-bg-set "$file" >/dev/null 2>&1 || die 1 "omarchy-theme-bg-set failed for $file"
+  else
+    echo "omarchy-theme-bg-set not found; downloaded to $file" >&2
+  fi
+}
+
+is_favorite() {
+  jq -e --arg id "$1" 'has($id)' "$FAVORITES_DB" >/dev/null 2>&1
+}
+
+# Drop downloads that have fallen out of history (favorites are separate copies).
+prune_photos() {
+  local keep
+  keep=$(jq -r '.history[].file' "$STATE")
+  local f
+  for f in "$PHOTOS_DIR"/*; do
+    [[ -f $f ]] || continue
+    grep -qxF "$f" <<<"$keep" || rm -f "$f"
+  done
+}
+
+# fetch [query...]: get a new photo, download it, set it as the wallpaper.
+fetch() {
+  local key proxy
+  key=$(access_key)
+  proxy=$(cfg proxy_url)
+  if [[ -z $key ]]; then
+    set_error "no_key"
+    die $E_NO_KEY "no Unsplash access key. Run: omarchy-unsplash setup"
+  fi
+  # proxy_url is reserved for a future keyless mode; with a key we always go direct.
+  : "$proxy"
+
+  local source kind value
+  source=$(pick_source "$@")
+  kind=${source%%$'\t'*}
+  value=${source#*$'\t'}
+
+  # Ask again (up to 3 times) if Unsplash hands back something we showed recently.
+  local json id attempt
+  for attempt in 1 2 3; do
+    json=$(random_photo_json "$kind" "$value") || exit $?
+    id=$(jq -r '.id // empty' <<<"$json")
+    [[ -n $id ]] || { set_error "bad_response"; die $E_API "unexpected response from Unsplash"; }
+    jq -e --arg id "$id" 'any(.history[]; .id == $id)' "$STATE" >/dev/null || break
+  done
+
+  local size w h raw file tmp
+  size=$(screen_size)
+  w=${size%x*}
+  h=${size#*x}
+  raw=$(jq -r '.urls.raw' <<<"$json")
+  file="$PHOTOS_DIR/$id.jpg"
+  tmp=$(mktemp "$PHOTOS_DIR/.download.XXXXXX")
+
+  if ! curl -fsS --max-time 120 -o "$tmp" "$raw&w=$w&h=$h&fit=crop&crop=entropy&q=85&fm=jpg"; then
+    rm -f "$tmp"
+    set_error "network"
+    die $E_NETWORK "failed to download the photo"
+  fi
+  if [[ ! -s $tmp ]] || [[ $(head -c 2 "$tmp" | od -An -tx1 | tr -d ' \n') != "ffd8" ]]; then
+    rm -f "$tmp"
+    set_error "bad_image"
+    die $E_API "downloaded file is not a JPEG"
+  fi
+  mv "$tmp" "$file"
+
+  # Unsplash requires pinging download_location whenever a photo is used.
+  local download_location
+  download_location=$(jq -r '.links.download_location // empty' <<<"$json")
+  if [[ -n $download_location ]]; then
+    curl -fsS --max-time 20 -o /dev/null -H "Authorization: Client-ID $key" -H "Accept-Version: v1" \
+      "$download_location" >/dev/null 2>&1 &
+  fi
+
+  local photo
+  photo=$(jq -c --arg file "$file" --arg kind "$kind" --arg value "$value" \
+    --argjson now "$(date +%s)" --arg utm "$UTM" '{
+      id,
+      file: $file,
+      description: (.description // .alt_description // ""),
+      author: (.user.name // "Unknown"),
+      author_url: ((.user.links.html // "https://unsplash.com") + "?" + $utm),
+      photo_url: (.links.html + "?" + $utm),
+      location: (.location.name // ""),
+      color: (.color // ""),
+      source: {kind: $kind, value: $value},
+      fetched_at: $now,
+      favorite: false
+    }' <<<"$json")
+
+  apply_wallpaper "$file"
+
+  local size_limit
+  size_limit=$(cfg history_size 30)
+  state_update --argjson p "$photo" --argjson n "$size_limit" --argjson now "$(date +%s)" '
+    .current = $p
+    | .history = ([$p] + [.history[] | select(.id != $p.id)])[0:$n]
+    | .last_fetch = $now
+    | .last_error = ""
+    | .error_at = 0'
+  prune_photos
+  wait
+
+  jq -r '.current | "\(.author)\t\(.description)"' "$STATE"
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_new() {
+  ensure_config
+  ensure_state
+  take_lock
+  fetch "$@"
+}
+
+# Seconds-based intervals; daily and weekly follow the calendar instead.
+interval_due() {
+  local interval=$1 last=$2 now
+  now=$(date +%s)
+  case $interval in
+    manual | off) return 1 ;;
+    hourly) ((now - last >= 3600)) ;;
+    3h) ((now - last >= 10800)) ;;
+    12h) ((now - last >= 43200)) ;;
+    weekly) [[ $(date -d "@$last" +%G-%V) != $(date +%G-%V) ]] ;;
+    *) [[ $(date -d "@$last" +%F) != $(date +%F) ]] ;; # daily
+  esac
+}
+
+# tick: run by the shell plugin every few minutes; fetches only when due.
+# Quiet on failure apart from recording the error, so being offline doesn't spam.
+cmd_tick() {
+  ensure_config
+  ensure_state
+  local last
+  last=$(jq -r '.last_fetch // 0' "$STATE")
+  interval_due "$(cfg interval daily)" "$last" || return 0
+  [[ -n $(access_key) ]] || { set_error "no_key"; return $E_NO_KEY; }
+
+  take_lock
+  # A failed attempt backs off for 15 minutes instead of retrying every tick.
+  local error_at
+  error_at=$(jq -r '.error_at // 0' "$STATE")
+  (($(date +%s) - error_at < 900)) && return 0
+
+  local result
+  result=$(fetch) || exit $?
+  if [[ $(cfg notify true) == true ]]; then
+    notify "New wallpaper" "Photo by ${result%%$'\t'*} on Unsplash" "$(current_field file)"
+  fi
+}
+
+# step <offset>: move through history; offset +1 is older, -1 newer.
+cmd_step() {
+  ensure_config
+  ensure_state
+  take_lock
+  local offset=$1 target
+  target=$(jq -c --argjson o "$offset" --arg cur "$(current_field id)" '
+    (.history | map(.id) | index($cur)) as $i
+    | if $i == null or $i + $o < 0 then null else .history[$i + $o] end' "$STATE")
+  if [[ -z $target || $target == null ]]; then
+    if ((offset < 0)); then
+      fetch
+      return
+    fi
+    die 1 "no older photo in history"
+  fi
+  local file
+  file=$(jq -r '.file' <<<"$target")
+  [[ -f $file ]] || die 1 "photo file is missing: $file"
+  apply_wallpaper "$file"
+  state_update --argjson p "$target" '.current = $p'
+}
+
+mark_favorite() {
+  state_update --arg id "$1" --argjson v "$2" '
+    (if .current.id == $id then .current.favorite = $v else . end)
+    | .history |= map(if .id == $id then .favorite = $v else . end)'
+}
+
+slugify() {
+  tr '[:upper:]' '[:lower:]' <<<"$1" | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-40
+}
+
+cmd_fav() {
+  ensure_config
+  ensure_state
+  local id file author dir dest
+  id=$(current_field id)
+  [[ -n $id ]] || die 1 "no current Unsplash photo"
+  if is_favorite "$id"; then
+    echo "already a favorite"
+    return
+  fi
+  file=$(current_field file)
+  [[ -f $file ]] || die 1 "photo file is missing: $file"
+  author=$(current_field author)
+  dir=$(favorites_dir)
+  mkdir -p "$dir"
+  dest="$dir/$(slugify "$author")-$id.jpg"
+  cp -f "$file" "$dest"
+
+  local tmp
+  tmp=$(mktemp "$FAVORITES_DB.XXXXXX")
+  jq --arg dest "$dest" --argjson p "$(jq -c '.current' "$STATE")" --argjson now "$(date +%s)" \
+    '.[$p.id] = ($p | del(.favorite) | .file = $dest | .saved_at = $now)' "$FAVORITES_DB" >"$tmp" &&
+    mv "$tmp" "$FAVORITES_DB"
+  mark_favorite "$id" true
+  echo "saved to $dest"
+}
+
+cmd_unfav() {
+  ensure_state
+  local id=${1:-$(current_field id)}
+  [[ -n $id ]] || die 1 "no current Unsplash photo"
+  is_favorite "$id" || { echo "not a favorite"; return; }
+  local dest
+  dest=$(jq -r --arg id "$id" '.[$id].file // empty' "$FAVORITES_DB")
+  if [[ -n $dest && $dest == "$(current_field file)" && -f $dest ]]; then
+    # The wallpaper on screen is the favorites copy itself (picked via
+    # `favorites`): move it back into the photo cache rather than deleting it.
+    local cached="$PHOTOS_DIR/$id.jpg"
+    cp -f "$dest" "$cached"
+    apply_wallpaper "$cached"
+    state_update --arg f "$cached" '.current.file = $f'
+    rm -f "$dest"
+  elif [[ -n $dest ]]; then
+    rm -f "$dest"
+  fi
+  local tmp
+  tmp=$(mktemp "$FAVORITES_DB.XXXXXX")
+  jq --arg id "$id" 'del(.[$id])' "$FAVORITES_DB" >"$tmp" && mv "$tmp" "$FAVORITES_DB"
+  mark_favorite "$id" false
+  echo "removed from favorites"
+}
+
+cmd_toggle_fav() {
+  ensure_state
+  if is_favorite "$(current_field id)"; then cmd_unfav; else cmd_fav; fi
+}
+
+# favorites: browse saved favorites in Omarchy's image picker and apply one.
+cmd_favorites() {
+  ensure_config
+  ensure_state
+  local dir
+  dir=$(favorites_dir)
+  if [[ ${1:-} == --list ]]; then
+    jq -r 'to_entries | sort_by(-.value.saved_at)[] | "\(.value.file)\t\(.value.author)\t\(.value.photo_url)"' "$FAVORITES_DB"
+    return
+  fi
+  if [[ ${1:-} == --dir ]]; then
+    echo "$dir"
+    return
+  fi
+  if ! compgen -G "$dir/*.jpg" >/dev/null; then
+    notify "No favorites yet" "Press the heart in the Unsplash widget to save a wallpaper"
+    die 1 "no favorites yet in $dir"
+  fi
+  local selected
+  selected=$(omarchy-menu-images --selected "$(readlink -f "$HOME/.local/state/omarchy/current/background" 2>/dev/null)" "$dir")
+  [[ -n $selected && -f $selected ]] || return 0
+  apply_wallpaper "$selected"
+  # Point `current` at the favorite so the widget shows the right credit.
+  local id
+  id=$(jq -r --arg f "$selected" 'to_entries[] | select(.value.file == $f) | .key' "$FAVORITES_DB" | head -n1)
+  if [[ -n $id ]]; then
+    state_update --argjson p "$(jq -c --arg id "$id" '.[$id] | .favorite = true' "$FAVORITES_DB")" '.current = $p'
+  fi
+}
+
+cmd_open() {
+  ensure_state
+  local url
+  url=$(current_field photo_url)
+  [[ -n $url ]] || die 1 "no current Unsplash photo"
+  if have omarchy-launch-browser; then
+    setsid omarchy-launch-browser "$url" >/dev/null 2>&1 &
+  else
+    setsid xdg-open "$url" >/dev/null 2>&1 &
+  fi
+}
+
+# Accept "a, b, c" or separate args; trims and drops empties.
+split_list() {
+  printf '%s\n' "$@" | tr ',' '\n' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | grep -v '^$' | jq -R . | jq -sc 'unique'
+}
+
+cmd_keywords() {
+  ensure_config
+  local action=${1:-show}
+  shift || true
+  case $action in
+    show | list) cfg keywords ;;
+    set) cfg_update --argjson v "$(split_list "$@")" '.keywords = $v' ;;
+    add) cfg_update --argjson v "$(split_list "$@")" '.keywords = (.keywords + $v | unique)' ;;
+    remove | rm) cfg_update --argjson v "$(split_list "$@")" '.keywords -= $v' ;;
+    clear) cfg_update '.keywords = []' ;;
+    *) die $E_USAGE "usage: omarchy-unsplash keywords [show|set|add|remove|clear] [words, ...]" ;;
+  esac
+}
+
+# Collections accept a full URL (https://unsplash.com/collections/<id>/<slug>) or a bare id.
+collection_id() {
+  local value=$1
+  if [[ $value =~ /collections/([A-Za-z0-9_-]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+  else
+    echo "$value"
+  fi
+}
+
+cmd_collections() {
+  ensure_config
+  local action=${1:-show}
+  shift || true
+  local ids=() v
+  for v in "$@"; do ids+=("$(collection_id "$v")"); done
+  case $action in
+    show | list) cfg collections ;;
+    add) cfg_update --argjson v "$(split_list "${ids[@]}")" '.collections = (.collections + $v | unique)' ;;
+    remove | rm) cfg_update --argjson v "$(split_list "${ids[@]}")" '.collections -= $v' ;;
+    clear) cfg_update '.collections = []' ;;
+    *) die $E_USAGE "usage: omarchy-unsplash collections [show|add|remove|clear] [url-or-id ...]" ;;
+  esac
+}
+
+cmd_interval() {
+  ensure_config
+  if (($# == 0)); then
+    cfg interval daily
+    return
+  fi
+  case $1 in
+    hourly | 3h | 12h | daily | weekly | manual) cfg_update --arg v "$1" '.interval = $v' ;;
+    *) die $E_USAGE "interval must be one of: hourly 3h 12h daily weekly manual" ;;
+  esac
+}
+
+cmd_key() {
+  ensure_config
+  ensure_state
+  case ${1:-show} in
+    show)
+      local key
+      key=$(access_key)
+      if [[ -n $key ]]; then echo "${key:0:4}…${key: -4}"; else echo "(not set)"; fi
+      ;;
+    set)
+      [[ -n ${2:-} ]] || die $E_USAGE "usage: omarchy-unsplash key set <access-key>"
+      local key=$2
+      # Validate with a cheap call before saving.
+      UNSPLASH_ACCESS_KEY=$key api_get "/topics/wallpapers" >/dev/null || exit $?
+      cfg_update --arg v "$key" '.access_key = $v'
+      clear_error
+      echo "access key saved"
+      ;;
+    clear) cfg_update '.access_key = ""' ;;
+    *) die $E_USAGE "usage: omarchy-unsplash key [show|set <key>|clear]" ;;
+  esac
+}
+
+cmd_status() {
+  ensure_config
+  ensure_state
+  if [[ ${1:-} == --json ]]; then
+    jq --argjson has_key "$([[ -n $(access_key) ]] && echo true || echo false)" \
+      --arg interval "$(cfg interval daily)" \
+      --argjson keywords "$(jq -c '.keywords // []' "$CONFIG")" \
+      --argjson collections "$(jq -c '.collections // []' "$CONFIG")" \
+      '{current, last_fetch, last_error, busy, has_key: $has_key, interval: $interval,
+        keywords: $keywords, collections: $collections, history_count: (.history | length)}' "$STATE"
+    return
+  fi
+  local author
+  author=$(current_field author)
+  if [[ -n $author ]]; then
+    echo "Photo:    $(current_field description)"
+    echo "By:       $author"
+    echo "Link:     $(current_field photo_url)"
+    echo "Favorite: $(current_field favorite)"
+  else
+    echo "No photo yet."
+  fi
+  echo "Interval: $(cfg interval daily)"
+  echo "Keywords: $(cfg keywords | paste -sd, - | sed 's/,/, /g')"
+  echo "Key:      $(cmd_key show)"
+  local err
+  err=$(jq -r '.last_error // empty' "$STATE")
+  [[ -n $err ]] && echo "Error:    $err"
+  return 0
+}
+
+# link: put the CLI on PATH so keybindings and menus can call it.
+cmd_link() {
+  local self target="$HOME/.local/bin/omarchy-unsplash"
+  self=$(readlink -f "${BASH_SOURCE[0]}")
+  mkdir -p "$HOME/.local/bin"
+  ln -sfn "$self" "$target"
+  echo "linked $target -> $self"
+}
+
+cmd_setup() {
+  ensure_config
+  ensure_state
+  cat <<EOF
+Unsplash wallpapers for Omarchy
+===============================
+
+This plugin needs a free Unsplash access key (about two minutes):
+
+  1. Sign in at unsplash.com and create a new application:
+     $KEY_SIGNUP_URL
+  2. Accept the API terms, give it any name (e.g. "Omarchy wallpaper").
+  3. Copy the "Access Key" (not the Secret key) and paste it below.
+
+EOF
+  if have xdg-open; then
+    read -rp "Open the Unsplash developer page in your browser now? [Y/n] " answer
+    [[ ${answer,,} == n* ]] || setsid xdg-open "$KEY_SIGNUP_URL" >/dev/null 2>&1 &
+  fi
+  local key
+  read -rp "Access key: " key
+  key=${key//[[:space:]]/}
+  [[ -n $key ]] || die 1 "no key entered"
+  cmd_key set "$key" || exit $?
+  cmd_link
+  echo
+  read -rp "Keywords to guide your wallpapers (comma separated, blank for Unsplash's picks): " words
+  [[ -n $words ]] && cmd_keywords set "$words"
+  echo "Fetching your first wallpaper…"
+  cmd_new && echo "Done. Enjoy!"
+}
+
+usage() {
+  cat <<EOF
+omarchy-unsplash $VERSION: Unsplash wallpapers for Omarchy
+
+Usage: omarchy-unsplash <command> [args]
+
+  new [words...]              Fetch a new wallpaper now (optionally for a one-off search)
+  prev | next                 Step back / forward through recent wallpapers
+  fav | unfav | toggle-fav    Save or remove the current wallpaper as a favorite
+  favorites [--list|--dir]    Pick a favorite in Omarchy's image picker
+  open                        Open the current photo on unsplash.com
+  status [--json]             Show the current photo and settings
+
+  keywords [show|set|add|remove|clear] [a, b, ...]
+                              Keywords picked at random for each new wallpaper
+  collections [show|add|remove|clear] [url-or-id ...]
+                              Unsplash collections to draw from
+  interval [hourly|3h|12h|daily|weekly|manual]
+  key [show|set <key>|clear]  Manage your Unsplash access key
+
+  setup                       Guided first-run setup (key, keywords, first photo)
+  link                        Symlink this command into ~/.local/bin
+  tick                        Fetch only if the interval has passed (used by the bar plugin)
+EOF
+}
+
+main() {
+  have jq || die 1 "jq is required"
+  have curl || die 1 "curl is required"
+  local cmd=${1:-help}
+  shift || true
+  case $cmd in
+    new | next-new) cmd_new "$@" ;;
+    tick) cmd_tick ;;
+    prev | previous | back) cmd_step 1 ;;
+    next | forward) cmd_step -1 ;;
+    fav | favorite | like) cmd_fav ;;
+    unfav | unfavorite | unlike) cmd_unfav "$@" ;;
+    toggle-fav | toggle-favorite) cmd_toggle_fav ;;
+    favorites | favs) cmd_favorites "$@" ;;
+    open) cmd_open ;;
+    status | info) cmd_status "$@" ;;
+    keywords | keyword | kw) cmd_keywords "$@" ;;
+    collections | collection) cmd_collections "$@" ;;
+    interval) cmd_interval "$@" ;;
+    key) cmd_key "$@" ;;
+    setup) cmd_setup ;;
+    link) cmd_link ;;
+    version | --version | -v) echo "$VERSION" ;;
+    help | --help | -h) usage ;;
+    *) usage >&2; exit $E_USAGE ;;
+  esac
+}
+
+main "$@"

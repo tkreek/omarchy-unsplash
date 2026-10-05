@@ -1,0 +1,9 @@
+  // Unsplash Wallpapers (tkreek.unsplash): paste inside ~/.config/omarchy/extensions/omarchy-menu.jsonc.
+  // Needs the CLI on PATH: ~/.config/omarchy/plugins/tkreek.unsplash/bin/omarchy-unsplash link
+  "style.unsplash": {"icon":"󰸉","label":"Unsplash","aliases":["unsplash","wallpaper"],"description":"Daily Unsplash wallpapers"},
+  "style.unsplash.new": {"icon":"󰑐","label":"New Wallpaper","action":"omarchy-unsplash new"},
+  "style.unsplash.prev": {"icon":"󰅁","label":"Previous Wallpaper","action":"omarchy-unsplash prev"},
+  "style.unsplash.fav": {"icon":"󰋑","label":"Favorite","checked":"[[ \"$(omarchy-unsplash status --json | jq -r .current.favorite)\" == true ]]","action":"omarchy-unsplash toggle-fav"},
+  "style.unsplash.favorites": {"icon":"󰉏","label":"Browse Favorites","action":"omarchy-unsplash favorites"},
+  "style.unsplash.open": {"icon":"󰏌","label":"Open on Unsplash","action":"omarchy-unsplash open"},
+  "style.unsplash.panel": {"icon":"","label":"Open Panel","action":"omarchy-shell shell toggle tkreek.unsplash"}
