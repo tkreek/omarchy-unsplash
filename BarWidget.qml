@@ -27,7 +27,8 @@ BarWidget {
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  readonly property string icon: busy ? "󰑓" : (isFavorite ? "󰋑" : "󰸉")
+  // Always the same glyph; busy shows as dimming, favorites only in the popup.
+  readonly property string icon: "󰸉"
 
   readonly property string tooltip: {
     if (!ready) return "Unsplash"
@@ -74,7 +75,7 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: root.icon
-    foreground: root.isFavorite ? root.accent : (root.bar ? root.bar.barForeground : Color.foreground)
+    foreground: root.bar ? root.bar.barForeground : Color.foreground
     dimmed: root.busy || (root.ready && !root.hasKey)
     useActiveColor: false
     tooltipText: root.tooltip
