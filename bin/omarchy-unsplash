@@ -354,7 +354,6 @@ interval_due() {
   local interval=$1 last=$2 now
   now=$(date +%s)
   case $interval in
-    manual | off) return 1 ;;
     hourly) ((now - last >= 3600)) ;;
     3h) ((now - last >= 10800)) ;;
     12h) ((now - last >= 43200)) ;;
@@ -566,8 +565,8 @@ cmd_interval() {
     return
   fi
   case $1 in
-    hourly | 3h | 12h | daily | weekly | manual) cfg_update --arg v "$1" '.interval = $v' ;;
-    *) die $E_USAGE "interval must be one of: hourly 3h 12h daily weekly manual" ;;
+    hourly | 3h | 12h | daily | weekly) cfg_update --arg v "$1" '.interval = $v' ;;
+    *) die $E_USAGE "interval must be one of: hourly 3h 12h daily weekly" ;;
   esac
 }
 
@@ -683,7 +682,7 @@ Usage: omarchy-unsplash <command> [args]
                               Keywords picked at random for each new wallpaper
   collections [show|add|remove|clear] [url-or-id ...]
                               Unsplash collections to draw from
-  interval [hourly|3h|12h|daily|weekly|manual]
+  interval [hourly|3h|12h|daily|weekly]
   key [show|set <key>|clear]  Manage your Unsplash access key
 
   setup                       Guided first-run setup (key, keywords, first photo)

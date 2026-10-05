@@ -41,7 +41,9 @@ Item {
   readonly property bool hasKey: !!(config && config.access_key)
   readonly property var keywords: config && config.keywords ? config.keywords : []
   readonly property var collections: config && config.collections ? config.collections : []
-  readonly property string interval: config && config.interval ? config.interval : "daily"
+  // Anything unrecognised (e.g. a hand-edited value) behaves as daily, matching the CLI.
+  readonly property string interval: config && ["hourly", "3h", "12h", "daily", "weekly"].indexOf(config.interval) !== -1
+    ? config.interval : "daily"
   readonly property string lastError: state && state.last_error ? state.last_error : ""
 
   // True while the CLI holds its lock, whoever started it (widget, keybinding, timer).

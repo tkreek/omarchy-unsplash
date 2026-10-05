@@ -3,7 +3,7 @@
 A fresh [Unsplash](https://unsplash.com) wallpaper every day, right from the Omarchy bar.
 Inspired by Unsplash's own Mac app.
 
-- **Daily by default**: or hourly, weekly, or only when you ask
+- **Daily by default**: or hourly or weekly
 - **Guided by keywords**: `mountains, fog, minimal`; one is picked at random each time.
   Leave blank for Unsplash's curated *Wallpapers* topic. Public collections work too.
 - **Favorites**: one click saves the current wallpaper to `~/Pictures/Unsplash`;
@@ -48,7 +48,7 @@ omarchy-unsplash fav | unfav          # favorites
 omarchy-unsplash favorites            # pick a favorite in the image picker
 omarchy-unsplash keywords set "mountains, fog, minimal"
 omarchy-unsplash collections add https://unsplash.com/collections/1065976/wallpapers
-omarchy-unsplash interval weekly      # hourly | 3h | 12h | daily | weekly | manual
+omarchy-unsplash interval weekly      # hourly | 3h | 12h | daily | weekly
 omarchy-unsplash status
 ```
 

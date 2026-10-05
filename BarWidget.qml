@@ -355,8 +355,7 @@ BarWidget {
         options: [
           { value: "hourly", label: "Hourly" },
           { value: "daily", label: "Daily" },
-          { value: "weekly", label: "Weekly" },
-          { value: "manual", label: "Manual" }
+          { value: "weekly", label: "Weekly" }
         ]
         value: root.ready ? root.svc.interval : "daily"
         foreground: root.fg
