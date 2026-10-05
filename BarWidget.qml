@@ -98,9 +98,6 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
-    // PopupCard doesn't take keyboard focus by default; the keyword and key
-    // fields need it.
-    grabFocus: true
     contentWidth: popup.fittedContentWidth(Style.space(340))
     contentHeight: popup.fittedContentHeight(column.implicitHeight)
 
@@ -371,20 +368,29 @@ BarWidget {
 
       PanelSeparator { visible: root.hasKey; width: parent.width; foreground: root.fg }
 
+      // Two equal halves spanning the full width, so both edges line up
+      // with the rest of the popup.
       Row {
+        id: footer
         visible: root.hasKey
+        width: parent.width
         spacing: Style.space(6)
+        readonly property real half: (width - spacing) / 2
         Button {
+          width: footer.half
           iconText: "󰋑"
-          text: "Browse favorites"
+          text: "Favorites"
+          tooltipText: "Browse saved favorites"
           foreground: root.fg
           accent: root.accent
           bordered: true
           onClicked: { root.close(); root.svc.openFavorites() }
         }
         Button {
+          width: footer.half
           iconText: "󰏌"
-          text: "Open on Unsplash"
+          text: "Unsplash"
+          tooltipText: "Open this photo on unsplash.com"
           foreground: root.fg
           accent: root.accent
           bordered: true
