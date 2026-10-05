@@ -17,6 +17,13 @@ Inspired by Unsplash's own Mac app.
 omarchy plugin add https://github.com/tkreek/omarchy-unsplash --enable
 ```
 
+Omarchy asks which part of the bar to put the icon in (left, center or right; right is
+preselected). To move it later:
+
+```bash
+omarchy bar move tkreek.unsplash --section left   # left | center | right
+```
+
 Then click the 󰸉 icon in the bar. The first time, it asks for a free Unsplash access key:
 
 1. Create an app at <https://unsplash.com/oauth/applications/new> (any name is fine)
