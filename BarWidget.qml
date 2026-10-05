@@ -93,310 +93,323 @@ BarWidget {
     }
   }
 
-  PopupCard {
+  // KeyboardPanel (layer-shell) rather than PopupCard (xdg-popup): popups
+  // never receive keyboard focus, and the keyword / access-key fields need it.
+  KeyboardPanel {
     id: popup
     anchorItem: root
     bar: root.bar
     owner: root
     open: root.popupOpen
+    focusTarget: keyCatcher
     contentWidth: popup.fittedContentWidth(Style.space(340))
     contentHeight: popup.fittedContentHeight(column.implicitHeight)
 
-    Column {
-      id: column
+    PanelKeyCatcher {
+      id: keyCatcher
       anchors.fill: parent
-      spacing: Style.space(10)
+      // Let the text fields have every key while they're being edited.
+      blocked: keywordsField.activeFocus || keyField.activeFocus
+      onCloseRequested: root.close()
 
-      // ---------------------------------------------------------- setup (no key)
       Column {
-        width: parent.width
-        spacing: Style.space(8)
-        visible: root.ready && !root.hasKey
+        id: column
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        spacing: Style.space(10)
 
-        Text {
+        // ---------------------------------------------------------- setup (no key)
+        Column {
           width: parent.width
-          text: "UNSPLASH WALLPAPERS"
-          color: root.accent
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          font.letterSpacing: 2
-        }
-        Text {
-          width: parent.width
-          wrapMode: Text.WordWrap
-          text: "A fresh wallpaper from Unsplash every day. To get started, create a free "
-            + "Unsplash app (about two minutes) and paste its Access Key below."
-          color: root.fg
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-        }
-        Button {
-          iconText: "󰏌"
-          text: "Get a free access key"
-          foreground: root.fg
-          accent: root.accent
-          bordered: true
-          onClicked: root.svc.openKeySignup()
-        }
-        Row {
-          width: parent.width
-          spacing: Style.space(6)
-          TextField {
-            id: keyField
-            width: parent.width - saveKey.width - parent.spacing
-            placeholderText: "Paste access key"
-            foreground: root.fg
-            accent: root.accent
+          spacing: Style.space(8)
+          visible: root.ready && !root.hasKey
+
+          Text {
+            width: parent.width
+            text: "UNSPLASH WALLPAPERS"
+            color: root.accent
             font.family: root.fontFamily
-            onAccepted: root.svc.setKey(text)
-            Keys.onEscapePressed: root.close()
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            font.letterSpacing: 2
+          }
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: "A fresh wallpaper from Unsplash every day. To get started, create a free "
+              + "Unsplash app (about two minutes) and paste its Access Key below."
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
           }
           Button {
-            id: saveKey
-            text: "Save"
+            iconText: "󰏌"
+            text: "Get a free access key"
             foreground: root.fg
             accent: root.accent
             bordered: true
-            enabled: keyField.text.trim() !== "" && !root.busy
-            opacity: enabled ? 1 : 0.4
-            onClicked: root.svc.setKey(keyField.text)
+            onClicked: root.svc.openKeySignup()
+          }
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+            TextField {
+              id: keyField
+              width: parent.width - saveKey.width - parent.spacing
+              placeholderText: "Paste access key"
+              foreground: root.fg
+              accent: root.accent
+              font.family: root.fontFamily
+              onAccepted: root.svc.setKey(text)
+              Keys.onEscapePressed: root.close()
+            }
+            Button {
+              id: saveKey
+              text: "Save"
+              foreground: root.fg
+              accent: root.accent
+              bordered: true
+              enabled: keyField.text.trim() !== "" && !root.busy
+              opacity: enabled ? 1 : 0.4
+              onClicked: root.svc.setKey(keyField.text)
+            }
           }
         }
-      }
 
-      // ---------------------------------------------------------- preview
-      ClippingRectangle {
-        visible: root.hasKey
-        width: parent.width
-        height: Math.round(width * 9 / 16)
-        radius: Style.space(6)
-        color: root.photo && root.photo.color ? root.photo.color : Util.alpha(root.fg, 0.08)
+        // ---------------------------------------------------------- preview
+        ClippingRectangle {
+          visible: root.hasKey
+          width: parent.width
+          height: Math.round(width * 9 / 16)
+          radius: Style.space(6)
+          color: root.photo && root.photo.color ? root.photo.color : Util.alpha(root.fg, 0.08)
 
-        Image {
-          id: preview
-          anchors.fill: parent
-          source: root.photo && root.photo.file ? "file://" + root.photo.file : ""
-          fillMode: Image.PreserveAspectCrop
-          asynchronous: true
-          sourceSize.width: Math.round(parent.width * 2)
-          opacity: status === Image.Ready ? (root.busy ? 0.45 : 1) : 0
-          Behavior on opacity { NumberAnimation { duration: 250 } }
+          Image {
+            id: preview
+            anchors.fill: parent
+            source: root.photo && root.photo.file ? "file://" + root.photo.file : ""
+            fillMode: Image.PreserveAspectCrop
+            asynchronous: true
+            sourceSize.width: Math.round(parent.width * 2)
+            opacity: status === Image.Ready ? (root.busy ? 0.45 : 1) : 0
+            Behavior on opacity { NumberAnimation { duration: 250 } }
+          }
+
+          Text {
+            anchors.centerIn: parent
+            visible: root.busy || !root.photo
+            text: root.busy ? "Fetching…" : "Right-click the bar icon or press 󰑐 for a wallpaper"
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          MouseArea {
+            anchors.fill: parent
+            enabled: !!root.photo
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.svc.openPhoto()
+          }
         }
 
-        Text {
-          anchors.centerIn: parent
-          visible: root.busy || !root.photo
-          text: root.busy ? "Fetching…" : "Right-click the bar icon or press 󰑐 for a wallpaper"
-          color: root.fg
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
+        // ---------------------------------------------------------- credit
+        Column {
+          visible: root.hasKey && !!root.photo
+          width: parent.width
+          spacing: Style.space(2)
+
+          Text {
+            width: parent.width
+            visible: text !== ""
+            text: root.photo && root.photo.description
+              ? root.photo.description.charAt(0).toUpperCase() + root.photo.description.slice(1) : ""
+            elide: Text.ElideRight
+            color: root.fg
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.subtitle
+            font.bold: true
+          }
+          Text {
+            width: parent.width
+            elide: Text.ElideRight
+            textFormat: Text.StyledText
+            linkColor: root.accent
+            text: root.photo
+              ? "Photo by <a href=\"" + root.photo.author_url + "\">" + root.photo.author + "</a> on "
+                + "<a href=\"https://unsplash.com/?utm_source=omarchy_unsplash&utm_medium=referral\">Unsplash</a>"
+                + (root.photo.location ? " · " + root.photo.location : "")
+              : ""
+            color: Util.alpha(root.fg, 0.7)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            onLinkActivated: function(link) { root.svc.openUrl(link) }
+            HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
+          }
         }
 
-        MouseArea {
-          anchors.fill: parent
-          enabled: !!root.photo
-          cursorShape: Qt.PointingHandCursor
-          onClicked: root.svc.openPhoto()
+        // ---------------------------------------------------------- transport
+        Row {
+          visible: root.hasKey
+          anchors.horizontalCenter: parent.horizontalCenter
+          spacing: Style.space(6)
+
+          Button {
+            iconText: "󰅁"
+            tooltipText: "Previous wallpaper"
+            foreground: root.fg
+            accent: root.accent
+            bordered: true
+            enabled: root.ready && root.svc.canGoBack && !root.busy
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.svc.previous()
+          }
+          Button {
+            iconText: root.isFavorite ? "󰋑" : "󰋕"
+            text: root.isFavorite ? "Saved" : "Favorite"
+            foreground: root.fg
+            accent: root.accent
+            bordered: true
+            selected: root.isFavorite
+            enabled: !!root.photo && !root.busy
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.svc.toggleFavorite()
+          }
+          Button {
+            iconText: "󰑐"
+            text: "New"
+            tooltipText: "Fetch a new wallpaper now"
+            foreground: root.fg
+            accent: root.accent
+            bordered: true
+            iconSpinning: root.busy
+            enabled: !root.busy
+            // Unsaved keywords in the field count: apply them first.
+            onClicked: root.applyKeywords()
+          }
+          Button {
+            iconText: "󰅂"
+            tooltipText: "Next wallpaper"
+            foreground: root.fg
+            accent: root.accent
+            bordered: true
+            enabled: root.ready && root.svc.canGoForward && !root.busy
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.svc.next()
+          }
         }
-      }
 
-      // ---------------------------------------------------------- credit
-      Column {
-        visible: root.hasKey && !!root.photo
-        width: parent.width
-        spacing: Style.space(2)
-
+        // ---------------------------------------------------------- messages
         Text {
           width: parent.width
           visible: text !== ""
-          text: root.photo && root.photo.description
-            ? root.photo.description.charAt(0).toUpperCase() + root.photo.description.slice(1) : ""
-          elide: Text.ElideRight
-          color: root.fg
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.subtitle
-          font.bold: true
-        }
-        Text {
-          width: parent.width
-          elide: Text.ElideRight
-          textFormat: Text.StyledText
-          linkColor: root.accent
-          text: root.photo
-            ? "Photo by <a href=\"" + root.photo.author_url + "\">" + root.photo.author + "</a> on "
-              + "<a href=\"https://unsplash.com/?utm_source=omarchy_unsplash&utm_medium=referral\">Unsplash</a>"
-              + (root.photo.location ? " · " + root.photo.location : "")
-            : ""
-          color: Util.alpha(root.fg, 0.7)
+          wrapMode: Text.WordWrap
+          text: !root.ready ? "" : (root.svc.message !== "" ? root.svc.message
+            : (root.hasKey ? root.svc.errorText : ""))
+          color: root.ready && (root.svc.messageIsError || root.svc.lastError !== "") ? Color.urgent : Util.alpha(root.fg, 0.7)
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
-          onLinkActivated: function(link) { root.svc.openUrl(link) }
-          HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
         }
-      }
 
-      // ---------------------------------------------------------- transport
-      Row {
-        visible: root.hasKey
-        anchors.horizontalCenter: parent.horizontalCenter
-        spacing: Style.space(6)
+        PanelSeparator { visible: root.hasKey; width: parent.width; foreground: root.fg }
 
-        Button {
-          iconText: "󰅁"
-          tooltipText: "Previous wallpaper"
-          foreground: root.fg
-          accent: root.accent
-          bordered: true
-          enabled: root.ready && root.svc.canGoBack && !root.busy
-          opacity: enabled ? 1 : 0.4
-          onClicked: root.svc.previous()
-        }
-        Button {
-          iconText: root.isFavorite ? "󰋑" : "󰋕"
-          text: root.isFavorite ? "Saved" : "Favorite"
-          foreground: root.fg
-          accent: root.accent
-          bordered: true
-          selected: root.isFavorite
-          enabled: !!root.photo && !root.busy
-          opacity: enabled ? 1 : 0.4
-          onClicked: root.svc.toggleFavorite()
-        }
-        Button {
-          iconText: "󰑐"
-          text: "New"
-          tooltipText: "Fetch a new wallpaper now"
-          foreground: root.fg
-          accent: root.accent
-          bordered: true
-          iconSpinning: root.busy
-          enabled: !root.busy
-          // Unsaved keywords in the field count: apply them first.
-          onClicked: root.applyKeywords()
-        }
-        Button {
-          iconText: "󰅂"
-          tooltipText: "Next wallpaper"
-          foreground: root.fg
-          accent: root.accent
-          bordered: true
-          enabled: root.ready && root.svc.canGoForward && !root.busy
-          opacity: enabled ? 1 : 0.4
-          onClicked: root.svc.next()
-        }
-      }
+        // ---------------------------------------------------------- keywords
+        PanelSectionHeader { visible: root.hasKey; text: "Keywords"; foreground: root.fg; fontFamily: root.fontFamily }
 
-      // ---------------------------------------------------------- messages
-      Text {
-        width: parent.width
-        visible: text !== ""
-        wrapMode: Text.WordWrap
-        text: !root.ready ? "" : (root.svc.message !== "" ? root.svc.message
-          : (root.hasKey ? root.svc.errorText : ""))
-        color: root.ready && (root.svc.messageIsError || root.svc.lastError !== "") ? Color.urgent : Util.alpha(root.fg, 0.7)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-      }
+        Row {
+          visible: root.hasKey
+          width: parent.width
+          spacing: Style.space(6)
 
-      PanelSeparator { visible: root.hasKey; width: parent.width; foreground: root.fg }
-
-      // ---------------------------------------------------------- keywords
-      PanelSectionHeader { visible: root.hasKey; text: "Keywords"; foreground: root.fg; fontFamily: root.fontFamily }
-
-      Row {
-        visible: root.hasKey
-        width: parent.width
-        spacing: Style.space(6)
-
-        TextField {
-          id: keywordsField
-          width: parent.width - applyKeywords.width - parent.spacing
-          placeholderText: "mountains, fog, minimal…"
-          foreground: root.fg
-          accent: root.accent
-          font.family: root.fontFamily
-          text: root.keywordsText()
-          onAccepted: root.applyKeywords()
-          Keys.onEscapePressed: { text = root.keywordsText(); root.close() }
-          // Re-sync from config when not being edited.
-          Connections {
-            target: root.svc
-            function onConfigChanged() { if (!keywordsField.activeFocus) keywordsField.text = root.keywordsText() }
+          TextField {
+            id: keywordsField
+            width: parent.width - applyKeywords.width - parent.spacing
+            placeholderText: "mountains, fog, minimal…"
+            foreground: root.fg
+            accent: root.accent
+            font.family: root.fontFamily
+            text: root.keywordsText()
+            onAccepted: root.applyKeywords()
+            Keys.onEscapePressed: { text = root.keywordsText(); root.close() }
+            // Re-sync from config when not being edited.
+            Connections {
+              target: root.svc
+              function onConfigChanged() { if (!keywordsField.activeFocus) keywordsField.text = root.keywordsText() }
+            }
+          }
+          Button {
+            id: applyKeywords
+            text: "Apply"
+            tooltipText: "Save keywords and fetch a matching wallpaper"
+            foreground: root.fg
+            accent: root.accent
+            bordered: true
+            selected: root.keywordsDirty
+            enabled: root.keywordsDirty && !root.busy
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.applyKeywords()
           }
         }
-        Button {
-          id: applyKeywords
-          text: "Apply"
-          tooltipText: "Save keywords and fetch a matching wallpaper"
-          foreground: root.fg
-          accent: root.accent
-          bordered: true
-          selected: root.keywordsDirty
-          enabled: root.keywordsDirty && !root.busy
-          opacity: enabled ? 1 : 0.4
-          onClicked: root.applyKeywords()
+        Text {
+          visible: root.hasKey
+          width: parent.width
+          wrapMode: Text.WordWrap
+          text: "Comma separated; one is picked at random each time. Leave blank for Unsplash's wallpaper picks."
+          color: Util.alpha(root.fg, 0.55)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
         }
-      }
-      Text {
-        visible: root.hasKey
-        width: parent.width
-        wrapMode: Text.WordWrap
-        text: "Comma separated; one is picked at random each time. Leave blank for Unsplash's wallpaper picks."
-        color: Util.alpha(root.fg, 0.55)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-      }
 
-      // ---------------------------------------------------------- interval
-      PanelSectionHeader { visible: root.hasKey; text: "New wallpaper"; foreground: root.fg; fontFamily: root.fontFamily }
+        // ---------------------------------------------------------- interval
+        PanelSectionHeader { visible: root.hasKey; text: "New wallpaper"; foreground: root.fg; fontFamily: root.fontFamily }
 
-      ButtonGroup {
-        visible: root.hasKey
-        options: [
-          { value: "hourly", label: "Hourly" },
-          { value: "daily", label: "Daily" },
-          { value: "weekly", label: "Weekly" }
-        ]
-        value: root.ready ? root.svc.interval : "daily"
-        foreground: root.fg
-        accent: root.accent
-        fontFamily: root.fontFamily
-        focusable: false
-        onChanged: function(v) { root.svc.setChangeInterval(v) }
-      }
-
-      PanelSeparator { visible: root.hasKey; width: parent.width; foreground: root.fg }
-
-      // Two equal halves spanning the full width, so both edges line up
-      // with the rest of the popup.
-      Row {
-        id: footer
-        visible: root.hasKey
-        width: parent.width
-        spacing: Style.space(6)
-        readonly property real half: (width - spacing) / 2
-        Button {
-          width: footer.half
-          iconText: "󰋑"
-          text: "Favorites"
-          tooltipText: "Browse saved favorites"
+        ButtonGroup {
+          visible: root.hasKey
+          options: [
+            { value: "hourly", label: "Hourly" },
+            { value: "daily", label: "Daily" },
+            { value: "weekly", label: "Weekly" }
+          ]
+          value: root.ready ? root.svc.interval : "daily"
           foreground: root.fg
           accent: root.accent
-          bordered: true
-          onClicked: { root.close(); root.svc.openFavorites() }
+          fontFamily: root.fontFamily
+          focusable: false
+          onChanged: function(v) { root.svc.setChangeInterval(v) }
         }
-        Button {
-          width: footer.half
-          iconText: "󰏌"
-          text: "Unsplash"
-          tooltipText: "Open this photo on unsplash.com"
-          foreground: root.fg
-          accent: root.accent
-          bordered: true
-          enabled: !!root.photo
-          opacity: enabled ? 1 : 0.4
-          onClicked: root.svc.openPhoto()
+
+        PanelSeparator { visible: root.hasKey; width: parent.width; foreground: root.fg }
+
+        // Two equal halves spanning the full width, so both edges line up
+        // with the rest of the popup.
+        Row {
+          id: footer
+          visible: root.hasKey
+          width: parent.width
+          spacing: Style.space(6)
+          readonly property real half: (width - spacing) / 2
+          Button {
+            width: footer.half
+            iconText: "󰋑"
+            text: "Favorites"
+            tooltipText: "Browse saved favorites"
+            foreground: root.fg
+            accent: root.accent
+            bordered: true
+            onClicked: { root.close(); root.svc.openFavorites() }
+          }
+          Button {
+            width: footer.half
+            iconText: "󰏌"
+            text: "Unsplash"
+            tooltipText: "Open this photo on unsplash.com"
+            foreground: root.fg
+            accent: root.accent
+            bordered: true
+            enabled: !!root.photo
+            opacity: enabled ? 1 : 0.4
+            onClicked: root.svc.openPhoto()
+          }
         }
       }
     }

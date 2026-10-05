@@ -3,6 +3,8 @@
 A fresh [Unsplash](https://unsplash.com) wallpaper every day, right from the Omarchy bar.
 Inspired by Unsplash's own Mac app.
 
+<p align="center"><img src="preview.png" alt="Unsplash Wallpapers popup" width="340"></p>
+
 - **Daily by default**: or hourly or weekly
 - **Guided by keywords**: `mountains, fog, minimal`; one is picked at random each time.
   Leave blank for Unsplash's curated *Wallpapers* topic. Public collections work too.
@@ -35,6 +37,9 @@ Prefer the terminal? Run `~/.config/omarchy/plugins/tkreek.unsplash/bin/omarchy-
 > **Why your own key?** Unsplash rate-limits each key (50 requests/hour on a new app).
 > This plugin uses about two a day, so your own key never runs out, and nobody shares a
 > key that could be revoked for everyone.
+
+**Requirements:** `curl` and `jq` (both ship with Omarchy) and a free Unsplash access key.
+The plugin talks only to `api.unsplash.com` and `images.unsplash.com`.
 
 ## Using it
 
@@ -79,6 +84,19 @@ Paste `extras/bindings.lua` into `~/.config/hypr/bindings.lua`:
 
 Other config options: `orientation` (`landscape`/`portrait`/`squarish`), `content_filter`
 (`high`/`low`), `history_size`, `notify` (desktop notification on each scheduled wallpaper).
+
+## Uninstall
+
+```bash
+omarchy theme bg next                      # switch away from the Unsplash wallpaper first
+omarchy plugin remove tkreek.unsplash
+rm -f ~/.local/bin/omarchy-unsplash
+rm -rf ~/.config/omarchy-unsplash ~/.local/state/omarchy-unsplash ~/.local/share/omarchy-unsplash
+```
+
+Your favorites in `~/Pictures/Unsplash` are left alone; delete that folder too if you don't want them.
+If you added the optional keybindings or menu entries, remove them from
+`~/.config/hypr/bindings.lua` and `~/.config/omarchy/extensions/omarchy-menu.jsonc`.
 
 ## How it works
 
