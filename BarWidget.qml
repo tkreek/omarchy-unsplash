@@ -51,6 +51,21 @@ BarWidget {
     return ready ? svc.keywords.join(", ") : ""
   }
 
+  // Normalised so "a,b" and "a, b" compare equal to what's saved.
+  function normaliseKeywords(text) {
+    return String(text || "").split(",").map(function(k) { return k.trim() })
+      .filter(function(k) { return k !== "" }).sort().join(", ")
+  }
+  readonly property bool keywordsDirty: ready && normaliseKeywords(keywordsField.text) !== normaliseKeywords(keywordsText())
+
+  // Saves the keyword field (if changed) and fetches a matching wallpaper.
+  function applyKeywords() {
+    if (!ready) return
+    if (keywordsDirty) svc.setKeywords(keywordsField.text)
+    else svc.newPhoto()
+    keywordsField.focus = false
+  }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -83,6 +98,9 @@ BarWidget {
     bar: root.bar
     owner: root
     open: root.popupOpen
+    // PopupCard doesn't take keyboard focus by default; the keyword and key
+    // fields need it.
+    grabFocus: true
     contentWidth: popup.fittedContentWidth(Style.space(340))
     contentHeight: popup.fittedContentHeight(column.implicitHeight)
 
@@ -256,7 +274,8 @@ BarWidget {
           bordered: true
           iconSpinning: root.busy
           enabled: !root.busy
-          onClicked: root.svc.newPhoto()
+          // Unsaved keywords in the field count: apply them first.
+          onClicked: root.applyKeywords()
         }
         Button {
           iconText: "󰅂"
@@ -287,28 +306,45 @@ BarWidget {
       // ---------------------------------------------------------- keywords
       PanelSectionHeader { visible: root.hasKey; text: "Keywords"; foreground: root.fg; fontFamily: root.fontFamily }
 
-      TextField {
-        id: keywordsField
+      Row {
         visible: root.hasKey
         width: parent.width
-        placeholderText: "mountains, fog, minimal…"
-        foreground: root.fg
-        accent: root.accent
-        font.family: root.fontFamily
-        text: root.keywordsText()
-        onAccepted: { root.svc.setKeywords(text); focus = false }
-        Keys.onEscapePressed: { text = root.keywordsText(); root.close() }
-        // Re-sync from config when not being edited.
-        Connections {
-          target: root.svc
-          function onConfigChanged() { if (!keywordsField.activeFocus) keywordsField.text = root.keywordsText() }
+        spacing: Style.space(6)
+
+        TextField {
+          id: keywordsField
+          width: parent.width - applyKeywords.width - parent.spacing
+          placeholderText: "mountains, fog, minimal…"
+          foreground: root.fg
+          accent: root.accent
+          font.family: root.fontFamily
+          text: root.keywordsText()
+          onAccepted: root.applyKeywords()
+          Keys.onEscapePressed: { text = root.keywordsText(); root.close() }
+          // Re-sync from config when not being edited.
+          Connections {
+            target: root.svc
+            function onConfigChanged() { if (!keywordsField.activeFocus) keywordsField.text = root.keywordsText() }
+          }
+        }
+        Button {
+          id: applyKeywords
+          text: "Apply"
+          tooltipText: "Save keywords and fetch a matching wallpaper"
+          foreground: root.fg
+          accent: root.accent
+          bordered: true
+          selected: root.keywordsDirty
+          enabled: root.keywordsDirty && !root.busy
+          opacity: enabled ? 1 : 0.4
+          onClicked: root.applyKeywords()
         }
       }
       Text {
         visible: root.hasKey
         width: parent.width
         wrapMode: Text.WordWrap
-        text: "Comma separated; one is picked at random each time. Leave blank for Unsplash's wallpaper picks. Enter applies."
+        text: "Comma separated; one is picked at random each time. Leave blank for Unsplash's wallpaper picks."
         color: Util.alpha(root.fg, 0.55)
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
