@@ -80,15 +80,19 @@ Item {
   // ---- actions (all routed through the CLI)
   property var pending: []
 
-  function run(args, onDone) {
+  // `input`, when given, is written to the command's stdin. Secrets go this way
+  // and never into args: other local users can read process command lines.
+  function run(args, onDone, input) {
     if (runner.running) {
       // One command at a time; drop duplicates of a queued command.
-      var key = args.join("\u0001")
-      for (var i = 0; i < pending.length; i++) if (pending[i].args.join("\u0001") === key) return
-      pending = pending.concat([{ args: args, onDone: onDone }])
+      var id = args.join("\u0001")
+      for (var i = 0; i < pending.length; i++) if (pending[i].args.join("\u0001") === id) return
+      pending = pending.concat([{ args: args, onDone: onDone, input: input }])
       return
     }
     runner.onDone = onDone || null
+    runner.input = input === undefined ? null : String(input)
+    runner.stdinEnabled = runner.input !== null
     runner.command = [root.cli].concat(args)
     runner.running = true
   }
@@ -122,7 +126,7 @@ Item {
     if (trimmed === "") return
     message = "Checking key…"
     messageIsError = false
-    run(["key", "set", trimmed], function(ok, err) {
+    run(["key", "set"], function(ok, err) {
       if (ok) {
         root.message = ""
         Quickshell.execDetached([root.cli, "link"])
@@ -131,12 +135,19 @@ Item {
         root.message = err || "That key didn't work."
         root.messageIsError = true
       }
-    })
+    }, trimmed + "\n")
   }
 
   Process {
     id: runner
     property var onDone: null
+    property var input: null
+    onStarted: {
+      if (input === null) return
+      write(input)
+      input = null
+      stdinEnabled = false  // closes stdin
+    }
     stdout: StdioCollector { id: runnerOut }
     stderr: StdioCollector { id: runnerErr }
     onExited: function(code) {
@@ -153,7 +164,7 @@ Item {
       if (root.pending.length > 0) {
         var nextCmd = root.pending[0]
         root.pending = root.pending.slice(1)
-        root.run(nextCmd.args, nextCmd.onDone)
+        root.run(nextCmd.args, nextCmd.onDone, nextCmd.input)
       }
     }
   }

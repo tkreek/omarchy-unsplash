@@ -37,6 +37,10 @@ Prefer the terminal? Run `~/.config/omarchy/plugins/tkreek.unsplash/bin/omarchy-
 > **Why your own key?** Unsplash rate-limits each key (50 requests/hour on a new app).
 > This plugin uses about two a day, so your own key never runs out, and nobody shares a
 > key that could be revoked for everyone.
+>
+> The key is stored in a mode-600 config file and never appears on a command line:
+> it reaches `curl` through stdin, so other users on the machine can't read it from the
+> process list. To change it from a terminal: `omarchy-unsplash key set` (prompts, or reads stdin).
 
 **Requirements:** `curl` and `jq` (both ship with Omarchy) and a free Unsplash access key.
 The plugin talks only to `api.unsplash.com` and `images.unsplash.com`.

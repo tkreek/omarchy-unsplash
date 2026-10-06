@@ -14,7 +14,7 @@
 
 set -o pipefail
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 API="https://api.unsplash.com"
 # Unsplash's API guidelines require these on every link back to their site.
 UTM="utm_source=omarchy_unsplash&utm_medium=referral"
@@ -165,13 +165,24 @@ current_field() {
 
 uri() { jq -rn --arg v "$1" '$v | @uri'; }
 
+# The access key must never appear in a process's argv (/proc/<pid>/cmdline is
+# world-readable). curl gets its headers as a config file on stdin; printf is a
+# shell builtin, so the key never reaches an exec'd command line.
+# curl_auth <key> [curl args...]
+curl_auth() {
+  local key=$1
+  shift
+  [[ $key =~ ^[A-Za-z0-9_-]+$ ]] || { set_error "bad_key"; die $E_API "the saved access key is malformed. Run: omarchy-unsplash key set"; }
+  printf 'header = "Authorization: Client-ID %s"\nheader = "Accept-Version: v1"\n' "$key" |
+    curl -K - "$@"
+}
+
 # api_get <path?query>: prints the response body; maps HTTP failures to exit codes.
 api_get() {
   local key body status
   key=$(access_key)
   body=$(mktemp)
-  status=$(curl -sS --max-time 20 -o "$body" -w '%{http_code}' \
-    -H "Authorization: Client-ID $key" -H "Accept-Version: v1" "$API$1" 2>/dev/null)
+  status=$(curl_auth "$key" -sS --max-time 20 -o "$body" -w '%{http_code}' "$API$1" 2>/dev/null)
   local rc=$?
   local out
   out=$(<"$body")
@@ -183,7 +194,7 @@ api_get() {
   fi
   case $status in
     200) printf '%s' "$out" ;;
-    401) set_error "bad_key"; die $E_API "Unsplash rejected the access key (401). Run: omarchy-unsplash key set <key>" ;;
+    401) set_error "bad_key"; die $E_API "Unsplash rejected the access key (401). Run: omarchy-unsplash key set" ;;
     403) set_error "rate_limited"; die $E_API "Unsplash rate limit reached (403); try again in an hour" ;;
     404) set_error "no_results"; die $E_API "no photos found for that search (404)" ;;
     *) set_error "http_$status"; die $E_API "Unsplash returned HTTP $status" ;;
@@ -304,8 +315,7 @@ fetch() {
   local download_location
   download_location=$(jq -r '.links.download_location // empty' <<<"$json")
   if [[ -n $download_location ]]; then
-    curl -fsS --max-time 20 -o /dev/null -H "Authorization: Client-ID $key" -H "Accept-Version: v1" \
-      "$download_location" >/dev/null 2>&1 &
+    curl_auth "$key" -fsS --max-time 20 -o /dev/null "$download_location" >/dev/null 2>&1 &
   fi
 
   local photo
@@ -580,16 +590,29 @@ cmd_key() {
       if [[ -n $key ]]; then echo "${key:0:4}…${key: -4}"; else echo "(not set)"; fi
       ;;
     set)
-      [[ -n ${2:-} ]] || die $E_USAGE "usage: omarchy-unsplash key set <access-key>"
-      local key=$2
+      # The key is read from stdin (or a hidden prompt), never taken as an
+      # argument, so it can't leak through argv or shell history.
+      (($# == 1)) || die $E_USAGE "usage: omarchy-unsplash key set   (reads the key from stdin or a prompt)"
+      local key
+      if [[ -t 0 ]]; then
+        read -rsp "Access key: " key
+        echo
+      else
+        IFS= read -r key || [[ -n $key ]]
+      fi
+      key=${key//[[:space:]]/}
+      [[ -n $key ]] || die $E_USAGE "no access key given"
+      # Unsplash keys are URL-safe base64; anything else could inject curl config lines.
+      [[ $key =~ ^[A-Za-z0-9_-]+$ ]] || die $E_USAGE "that doesn't look like an Unsplash access key"
       # Validate with a cheap call before saving.
       UNSPLASH_ACCESS_KEY=$key api_get "/topics/wallpapers" >/dev/null || exit $?
-      cfg_update --arg v "$key" '.access_key = $v'
+      # Through the environment, not --arg, for the same argv reason.
+      UNSPLASH_NEW_KEY=$key cfg_update '.access_key = env.UNSPLASH_NEW_KEY'
       clear_error
       echo "access key saved"
       ;;
     clear) cfg_update '.access_key = ""' ;;
-    *) die $E_USAGE "usage: omarchy-unsplash key [show|set <key>|clear]" ;;
+    *) die $E_USAGE "usage: omarchy-unsplash key [show|set|clear]" ;;
   esac
 }
 
@@ -653,10 +676,11 @@ EOF
     [[ ${answer,,} == n* ]] || setsid xdg-open "$KEY_SIGNUP_URL" >/dev/null 2>&1 &
   fi
   local key
-  read -rp "Access key: " key
+  read -rsp "Access key: " key
+  echo
   key=${key//[[:space:]]/}
   [[ -n $key ]] || die 1 "no key entered"
-  cmd_key set "$key" || exit $?
+  cmd_key set <<<"$key" || exit $?
   cmd_link
   echo
   read -rp "Keywords to guide your wallpapers (comma separated, blank for Unsplash's picks): " words
@@ -683,7 +707,7 @@ Usage: omarchy-unsplash <command> [args]
   collections [show|add|remove|clear] [url-or-id ...]
                               Unsplash collections to draw from
   interval [hourly|3h|12h|daily|weekly]
-  key [show|set <key>|clear]  Manage your Unsplash access key
+  key [show|set|clear]        Manage your Unsplash access key (set reads it from stdin or a prompt)
 
   setup                       Guided first-run setup (key, keywords, first photo)
   link                        Symlink this command into ~/.local/bin
