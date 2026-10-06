@@ -48,6 +48,18 @@ BarWidget {
   function close() { popupOpen = false }
   function togglePanel() { popupOpen = !popupOpen }
 
+  // Photo metadata comes from Unsplash and is editable by photographers, so
+  // treat it as untrusted wherever it meets rich text.
+  function escapeHtml(value) {
+    return String(value === undefined || value === null ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;")
+  }
+  function unsplashUrl(url) {
+    var u = String(url || "")
+    return /^https:\/\/unsplash\.com\/[A-Za-z0-9_@.\/?=&%-]*$/.test(u) ? u : "https://unsplash.com/"
+  }
+
   function keywordsText() {
     return ready ? svc.keywords.join(", ") : ""
   }
@@ -222,6 +234,8 @@ BarWidget {
           Text {
             width: parent.width
             visible: text !== ""
+            // Photographer-editable: never interpret it as markup.
+            textFormat: Text.PlainText
             text: root.photo && root.photo.description
               ? root.photo.description.charAt(0).toUpperCase() + root.photo.description.slice(1) : ""
             elide: Text.ElideRight
@@ -235,15 +249,19 @@ BarWidget {
             elide: Text.ElideRight
             textFormat: Text.StyledText
             linkColor: root.accent
+            // The only rich-text label: the name and location are escaped, and the
+            // href passes unsplashUrl() (unsplash.com, no quotes or brackets), so
+            // photo metadata can't add markup such as a remote <img> to the popup.
             text: root.photo
-              ? "Photo by <a href=\"" + root.photo.author_url + "\">" + root.photo.author + "</a> on "
+              ? "Photo by <a href=\"" + root.unsplashUrl(root.photo.author_url) + "\">"
+                + root.escapeHtml(root.photo.author) + "</a> on "
                 + "<a href=\"https://unsplash.com/?utm_source=omarchy_unsplash&utm_medium=referral\">Unsplash</a>"
-                + (root.photo.location ? " · " + root.photo.location : "")
+                + (root.photo.location ? " · " + root.escapeHtml(root.photo.location) : "")
               : ""
             color: Util.alpha(root.fg, 0.7)
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
-            onLinkActivated: function(link) { root.svc.openUrl(link) }
+            onLinkActivated: function(link) { root.svc.openUrl(root.unsplashUrl(link)) }
             HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
           }
         }
@@ -304,6 +322,7 @@ BarWidget {
           width: parent.width
           visible: text !== ""
           wrapMode: Text.WordWrap
+          textFormat: Text.PlainText
           text: !root.ready ? "" : (root.svc.message !== "" ? root.svc.message
             : (root.hasKey ? root.svc.errorText : ""))
           color: root.ready && (root.svc.messageIsError || root.svc.lastError !== "") ? Color.urgent : Util.alpha(root.fg, 0.7)

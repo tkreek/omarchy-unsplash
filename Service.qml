@@ -109,7 +109,10 @@ Item {
   function openPhoto() { run(["open"]) }
   function openFavorites() { Quickshell.execDetached([root.cli, "favorites"]) }
   function openKeySignup() { Quickshell.execDetached(["xdg-open", root.keySignupUrl]) }
-  function openUrl(url) { if (url) Quickshell.execDetached(["xdg-open", url]) }
+  // Only ever opens unsplash.com links (the URLs come from photo metadata).
+  function openUrl(url) {
+    if (/^https:\/\/unsplash\.com\//.test(String(url || ""))) Quickshell.execDetached(["xdg-open", String(url)])
+  }
 
   function setChangeInterval(value) { run(["interval", value]) }
 

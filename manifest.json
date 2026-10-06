@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "tkreek.unsplash",
   "name": "Unsplash Wallpapers",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "Thomas Kreek (tkreek)",
   "license": "MIT",
   "description": "A fresh Unsplash wallpaper every day (or hour, or week), optionally guided by keywords or collections. Save favorites, step back through recent wallpapers, and credit photographers right from the bar.",

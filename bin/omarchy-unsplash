@@ -14,7 +14,7 @@
 
 set -o pipefail
 
-VERSION="0.1.1"
+VERSION="0.1.2"
 API="https://api.unsplash.com"
 # Unsplash's API guidelines require these on every link back to their site.
 UTM="utm_source=omarchy_unsplash&utm_medium=referral"
@@ -287,7 +287,8 @@ fetch() {
   for attempt in 1 2 3; do
     json=$(random_photo_json "$kind" "$value") || exit $?
     id=$(jq -r '.id // empty' <<<"$json")
-    [[ -n $id ]] || { set_error "bad_response"; die $E_API "unexpected response from Unsplash"; }
+    # The id becomes a file name: allow only Unsplash's id alphabet.
+    [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || { set_error "bad_response"; die $E_API "unexpected response from Unsplash"; }
     jq -e --arg id "$id" 'any(.history[]; .id == $id)' "$STATE" >/dev/null || break
   done
 
@@ -295,7 +296,8 @@ fetch() {
   size=$(screen_size)
   w=${size%x*}
   h=${size#*x}
-  raw=$(jq -r '.urls.raw' <<<"$json")
+  raw=$(jq -r '.urls.raw // empty' <<<"$json")
+  [[ $raw == https://images.unsplash.com/* ]] || { set_error "bad_response"; die $E_API "unexpected image URL from Unsplash"; }
   file="$PHOTOS_DIR/$id.jpg"
   tmp=$(mktemp "$PHOTOS_DIR/.download.XXXXXX")
 
@@ -314,21 +316,31 @@ fetch() {
   # Unsplash requires pinging download_location whenever a photo is used.
   local download_location
   download_location=$(jq -r '.links.download_location // empty' <<<"$json")
-  if [[ -n $download_location ]]; then
+  # Only ever send the key to the API host.
+  if [[ $download_location == https://api.unsplash.com/* ]]; then
     curl_auth "$key" -fsS --max-time 20 -o /dev/null "$download_location" >/dev/null 2>&1 &
   fi
 
   local photo
+  # Description, location and name are editable by the photographer, so treat
+  # them as untrusted: plain text only (no markup, no control characters),
+  # bounded length, and links restricted to unsplash.com.
   photo=$(jq -c --arg file "$file" --arg kind "$kind" --arg value "$value" \
-    --argjson now "$(date +%s)" --arg utm "$UTM" '{
+    --argjson now "$(date +%s)" --arg utm "$UTM" '
+    def clean($n): (. // "") | tostring
+      | explode | map(if . < 32 or . == 127 then 32 elif . == 60 or . == 62 then empty else . end) | implode
+      | gsub("^\\s+|\\s+$"; "") | .[0:$n];
+    def unsplash_url: (. // "") | tostring
+      | if test("^https://unsplash\\.com/[A-Za-z0-9_@./-]*$") then . else "https://unsplash.com/" end;
+    {
       id,
       file: $file,
-      description: (.description // .alt_description // ""),
-      author: (.user.name // "Unknown"),
-      author_url: ((.user.links.html // "https://unsplash.com") + "?" + $utm),
-      photo_url: (.links.html + "?" + $utm),
-      location: (.location.name // ""),
-      color: (.color // ""),
+      description: ((.description // .alt_description) | clean(200)),
+      author: ((.user.name // "Unknown") | clean(80)),
+      author_url: ((.user.links.html | unsplash_url) + "?" + $utm),
+      photo_url: ((.links.html | unsplash_url) + "?" + $utm),
+      location: (.location.name | clean(80)),
+      color: ((.color // "") | if test("^#[0-9A-Fa-f]{6}$") then . else "" end),
       source: {kind: $kind, value: $value},
       fetched_at: $now,
       favorite: false
@@ -391,7 +403,9 @@ cmd_tick() {
   local result
   result=$(fetch) || exit $?
   if [[ $(cfg notify true) == true ]]; then
-    notify "New wallpaper" "Photo by ${result%%$'\t'*} on Unsplash" "$(current_field file)"
+    # Notification bodies are rendered as markup; the name is already tag-free, escape & too.
+    local author=${result%%$'\t'*}
+    notify "New wallpaper" "Photo by ${author//&/&amp;} on Unsplash" "$(current_field file)"
   fi
 }
 
@@ -517,6 +531,7 @@ cmd_open() {
   local url
   url=$(current_field photo_url)
   [[ -n $url ]] || die 1 "no current Unsplash photo"
+  [[ $url == https://unsplash.com/* ]] || die 1 "refusing to open a non-Unsplash link"
   if have omarchy-launch-browser; then
     setsid omarchy-launch-browser "$url" >/dev/null 2>&1 &
   else
